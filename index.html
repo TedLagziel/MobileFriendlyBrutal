@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <meta name="description" content="Eenvoudige mobiele MXW01 thermische printer">
+  <link rel="manifest" href="manifest.json">
+  <title>MXW01 Print</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,Segoe UI,sans-serif; background:#0b1020; color:#f8fafc; }
+    main { width:min(680px,100%); margin:auto; padding:16px 14px 32px; }
+    h1 { font-size:26px; margin:6px 0 2px; }
+    .sub { color:#94a3b8; margin:0 0 16px; }
+    .card { background:#111827; border:1px solid #243047; border-radius:18px; padding:14px; margin:12px 0; }
+    button,.file { width:100%; min-height:52px; border:0; border-radius:14px; padding:12px 16px; font-size:17px; font-weight:700; background:#2563eb; color:white; }
+    button:disabled { opacity:.45; }
+    .secondary { background:#263449; }
+    .print { background:#16a34a; font-size:19px; }
+    input[type=file] { display:none; }
+    .file { display:flex; align-items:center; justify-content:center; cursor:pointer; background:#334155; }
+    canvas { width:100%; max-height:62vh; object-fit:contain; background:white; border-radius:12px; image-rendering:auto; }
+    label { display:block; margin:8px 0 6px; color:#cbd5e1; }
+    input[type=range] { width:100%; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .status { font-size:14px; line-height:1.4; color:#cbd5e1; white-space:pre-wrap; }
+    .ok { color:#86efac; }
+    .warn { color:#fde68a; }
+    small { color:#64748b; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>MXW01 Print</h1>
+  <p class="sub">Eenvoudig printen vanaf Android • geen Fun Print nodig</p>
+
+  <section class="card">
+    <div class="row">
+      <button id="connect">Verbinden</button>
+      <button id="disconnect" class="secondary" disabled>Verbreken</button>
+    </div>
+    <p id="status" class="status">Nog niet verbonden.</p>
+  </section>
+
+  <section class="card">
+    <label for="photo" class="file">📷 Kies een foto</label>
+    <input id="photo" type="file" accept="image/*">
+    <p><small>De printer gebruikt 384 pixels breed. De afbeelding wordt automatisch zwart/wit gemaakt.</small></p>
+    <canvas id="preview" width="384" height="240"></canvas>
+  </section>
+
+  <section class="card">
+    <label for="dither">Dithering</label>
+    <select id="dither" style="width:100%;padding:13px;border-radius:12px;font-size:16px">
+      <option value="steinberg">Floyd-Steinberg</option>
+      <option value="atkinson">Atkinson</option>
+      <option value="bayer">Bayer</option>
+      <option value="threshold">Threshold</option>
+    </select>
+    <label for="intensity">Printsterkte: <span id="ival">93</span></label>
+    <input id="intensity" type="range" min="20" max="255" value="93">
+    <label for="brightness">Helderheid: <span id="bval">128</span></label>
+    <input id="brightness" type="range" min="0" max="255" value="128">
+  </section>
+
+  <section class="card">
+    <button id="print" class="print" disabled>🖨️ Print</button>
+  </section>
+</main>
+
+<script type="module">
+  import { ThermalPrinterClient, WebBluetoothAdapter } from "https://esm.sh/mxw01-thermal-printer@0.1.0";
+
+  const $ = id => document.getElementById(id);
+  const canvas = $("preview"), ctx = canvas.getContext("2d", {willReadFrequently:true});
+  let printer = null, connected = false, sourceImage = null;
+
+  function status(msg, cls="") {
+    $("status").textContent = msg;
+    $("status").className = "status " + cls;
+  }
+
+  function drawPreview() {
+    ctx.fillStyle = "white"; ctx.fillRect(0,0,canvas.width,canvas.height);
+    if (!sourceImage) return;
+    const scale = Math.min(384/sourceImage.width, 160/sourceImage.height);
+    const w = Math.max(1, Math.round(sourceImage.width*scale));
+    const h = Math.max(1, Math.round(sourceImage.height*scale));
+    const x = Math.round((384-w)/2), y = 12;
+    ctx.drawImage(sourceImage,x,y,w,h);
+    const img = ctx.getImageData(0,0,384,canvas.height);
+    const p = img.data;
+    const brightness = +$("brightness").value;
+    for(let i=0;i<p.length;i+=4) {
+      const v = (p[i]+p[i+1]+p[i+2])/3;
+      const adjusted = Math.max(0, Math.min(255, v + (brightness-128)));
+      const q = adjusted < 128 ? 0 : 255;
+      p[i]=p[i+1]=p[i+2]=q;
+    }
+    ctx.putImageData(img,0,0);
+  }
+
+  $("photo").addEventListener("change", e => {
+    const f=e.target.files?.[0]; if(!f) return;
+    const img=new Image();
+    img.onload=()=>{ sourceImage=img; canvas.height=Math.min(2000,Math.max(100,Math.round(img.height*384/img.width))); drawPreview(); };
+    img.src=URL.createObjectURL(f);
+  });
+  $("brightness").addEventListener("input",()=>{$("bval").textContent=$("brightness").value; drawPreview();});
+  $("intensity").addEventListener("input",()=>{$("ival").textContent=$("intensity").value;});
+
+  $("connect").onclick = async () => {
+    try {
+      status("Bluetooth-printer kiezen…");
+      const adapter = new WebBluetoothAdapter();
+      printer = new ThermalPrinterClient(adapter);
+      await printer.connect();
+      connected = true;
+      $("connect").disabled=true; $("disconnect").disabled=false; $("print").disabled=!sourceImage;
+      status("Verbonden met MXW01.", "ok");
+    } catch(e) {
+      console.error(e); connected=false;
+      status("Verbinden mislukt:\n"+(e?.message || e), "warn");
+    }
+  };
+
+  $("disconnect").onclick = async () => {
+    try { await printer?.disconnect(); } catch {}
+    connected=false; $("connect").disabled=false; $("disconnect").disabled=true; $("print").disabled=true;
+    status("Verbinding verbroken.");
+  };
+
+  $("print").onclick = async () => {
+    if(!printer || !sourceImage) return;
+    try {
+      $("print").disabled=true;
+      status("Status controleren en printen…");
+      drawPreview();
+      const data = ctx.getImageData(0,0,canvas.width,canvas.height);
+      await printer.print(data, {
+        dither: $("dither").value,
+        brightness: +$("brightness").value,
+        intensity: +$("intensity").value
+      });
+      status("Printopdracht verzonden.", "ok");
+    } catch(e) {
+      console.error(e);
+      status("Printen mislukt:\n"+(e?.message || e), "warn");
+    } finally {
+      $("print").disabled=!connected || !sourceImage;
+    }
+  };
+</script>
+</body>
+</html>
